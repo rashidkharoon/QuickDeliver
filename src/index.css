@@ -1,0 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@400;500;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-orange-500: #e8521a;
+  --color-orange-600: #d04312;
+  --color-orange-700: #b0350d;
+}
+
+/* Custom visual scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0c0a09; /* stone-950 */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #292524; /* stone-800 */
+  border-radius: 99px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #e8521a; /* orange accent */
+}
+
+/* WCAG compliance enhancement for outline rings */
+input:focus, select:focus, textarea:focus {
+  outline: 2px solid #e8521a;
+  outline-offset: 1px;
+}

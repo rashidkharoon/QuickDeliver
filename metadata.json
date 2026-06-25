@@ -1,0 +1,6 @@
+{
+  "name": "QuickDeliver",
+  "description": "A production-ready Progressive Web App for college student delivery services (Printing, Stationery, Binding) with direct Google Sheets & Drive storage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
