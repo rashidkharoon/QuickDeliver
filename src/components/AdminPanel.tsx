@@ -44,7 +44,7 @@ export default function AdminPanel({
   );
 
   // UPI Config states
-  const [upiId, setUpiId] = useState<string>("rashidkharoon@okhdfcbank");
+  const [upiId, setUpiId] = useState<string>("YOUR_UPI_ID");
 
   // Authentication states
   const [password, setPassword] = useState<string>("");
@@ -69,10 +69,10 @@ export default function AdminPanel({
     setAppsScriptUrl(savedUrl);
 
     let savedUpi =
-      localStorage.getItem("qd_admin_upi_id") || "rashidkharoon@okhdfcbank";
+      localStorage.getItem("qd_admin_upi_id") || "YOUR_UPI_ID";
     if (savedUpi === "quickdeliver@ybl") {
-      savedUpi = "rashidkharoon@okhdfcbank";
-      localStorage.setItem("qd_admin_upi_id", "rashidkharoon@okhdfcbank");
+      savedUpi = "YOUR_UPI_ID";
+      localStorage.setItem("qd_admin_upi_id", "YOUR_UPI_ID");
     }
     setUpiId(savedUpi);
 
