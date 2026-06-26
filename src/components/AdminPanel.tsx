@@ -11,6 +11,7 @@ import {
   HelpCircle,
   ArrowUpRight,
   Check,
+  Copy,
   X,
   ShieldAlert,
 } from "lucide-react";
@@ -44,7 +45,7 @@ export default function AdminPanel({
   );
 
   // UPI Config states
-  const [upiId, setUpiId] = useState<string>("YOUR_UPI_ID");
+  const [upiId, setUpiId] = useState<string>("merchant@upi");
 
   // Authentication states
   const [password, setPassword] = useState<string>("");
@@ -65,23 +66,43 @@ export default function AdminPanel({
 
   // Load orders and config
   const loadData = async () => {
-    const savedUrl = getAppsScriptUrl();
-    setAppsScriptUrl(savedUrl);
+    let savedUrl = getAppsScriptUrl();
+    let savedUpi = localStorage.getItem("qd_admin_upi_id") || "merchant@upi";
 
-    let savedUpi =
-      localStorage.getItem("qd_admin_upi_id") || "YOUR_UPI_ID";
-    if (savedUpi === "quickdeliver@ybl") {
-      savedUpi = "YOUR_UPI_ID";
-      localStorage.setItem("qd_admin_upi_id", "YOUR_UPI_ID");
+    try {
+      // Load current settings from server first to be in sync
+      const res = await fetch("/api/settings");
+      const data = await res.json();
+      if (data.success) {
+        if (data.appsScriptUrl) {
+          savedUrl = data.appsScriptUrl;
+          saveAppsScriptUrl(savedUrl);
+        }
+        if (data.upiId) {
+          savedUpi = data.upiId;
+          localStorage.setItem("qd_admin_upi_id", savedUpi);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to sync settings with cloud server on load:", err);
     }
+
+    setAppsScriptUrl(savedUrl);
     setUpiId(savedUpi);
 
     if (savedUrl) {
       setIsLoadingOrders(true);
       try {
-        const response = await fetch(`${savedUrl}?action=getOrders`, {
-          method: "GET",
-          mode: "cors",
+        const response = await fetch("/api/proxy-apps-script", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            appsScriptUrl: savedUrl,
+            method: "GET",
+            payload: { action: "getOrders" },
+          }),
         });
         const data = await response.json();
         if (data.success && data.orders) {
@@ -111,15 +132,23 @@ export default function AdminPanel({
   }, []);
 
   // Save Apps Script URL
-  const handleSaveUrl = () => {
+  const handleSaveUrl = async () => {
     setIsSavingUrl(true);
     try {
       saveAppsScriptUrl(appsScriptUrl);
-      addToast("Apps Script Web App URL updated!", "success");
+      
+      // Save settings to cloud server
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ appsScriptUrl }),
+      });
+
+      addToast("Apps Script Web App URL updated in Cloud!", "success");
       onRefreshStatus();
       loadData();
     } catch (e) {
-      addToast("Failed to save URL", "error");
+      addToast("Failed to save URL to cloud", "error");
     } finally {
       setIsSavingUrl(false);
     }
@@ -193,16 +222,19 @@ export default function AdminPanel({
 
     if (savedUrl) {
       try {
-        const response = await fetch(savedUrl, {
+        const response = await fetch("/api/proxy-apps-script", {
           method: "POST",
-          mode: "cors",
           headers: {
-            "Content-Type": "text/plain", // standard fetch to avoid pre-flight issues in Apps Script doPost
+            "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            action: "updateStatus",
-            orderId: orderId,
-            status: newStatus,
+            appsScriptUrl: savedUrl,
+            method: "POST",
+            payload: {
+              action: "updateStatus",
+              orderId: orderId,
+              status: newStatus,
+            },
           }),
         });
         const data = await response.json();
@@ -245,16 +277,19 @@ export default function AdminPanel({
 
     if (savedUrl) {
       try {
-        const response = await fetch(savedUrl, {
+        const response = await fetch("/api/proxy-apps-script", {
           method: "POST",
-          mode: "cors",
           headers: {
-            "Content-Type": "text/plain",
+            "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            action: "updatePaymentStatus",
-            orderId: orderId,
-            paymentStatus: newPaymentStatus,
+            appsScriptUrl: savedUrl,
+            method: "POST",
+            payload: {
+              action: "updatePaymentStatus",
+              orderId: orderId,
+              paymentStatus: newPaymentStatus,
+            },
           }),
         });
         const data = await response.json();
@@ -345,27 +380,59 @@ export default function AdminPanel({
       "File URL",
     ];
 
-    const rows = filteredOrders.map((o) => [
-      o.id,
-      o.timestamp,
-      `"${o.customerName.replace(/"/g, '""')}"`,
-      o.phone,
-      `"${o.department.replace(/"/g, '""')}"`,
-      `"${o.deliveryLocation.replace(/"/g, '""')}"`,
-      o.serviceType,
-      `"${o.details.replace(/"/g, '""')}"`,
-      o.status,
-      o.estimatedPrice,
-      o.fileUrl || "",
-    ]);
+    const escapeCSVCell = (val: any) => {
+      if (val === null || val === undefined) return "";
+      const stringVal = String(val);
+      const escaped = stringVal.replace(/"/g, '""');
+      if (
+        escaped.includes(",") ||
+        escaped.includes('"') ||
+        escaped.includes("\n") ||
+        escaped.includes("\r")
+      ) {
+        return `"${escaped}"`;
+      }
+      return escaped;
+    };
 
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
+    const rows = filteredOrders.map((o) => {
+      const absoluteFileUrl = o.fileUrl
+        ? (o.fileUrl.startsWith("http") ? o.fileUrl : `${window.location.origin}${o.fileUrl}`)
+        : "";
+      
+      const fileCellValue = absoluteFileUrl
+        ? `=HYPERLINK("${absoluteFileUrl}", "View File")`
+        : "";
 
-    const encodedUri = encodeURI(csvContent);
+      // Format numeric phone numbers to prevent scientific notation (e.g., 8.3E+09)
+      const phoneCellValue = (o.phone && /^\+?\d+$/.test(o.phone.trim()))
+        ? `="${o.phone.trim()}"`
+        : o.phone;
+
+      return [
+        o.id,
+        o.timestamp,
+        o.customerName,
+        phoneCellValue,
+        o.department,
+        o.deliveryLocation,
+        o.serviceType,
+        o.details,
+        o.status,
+        o.estimatedPrice,
+        fileCellValue,
+      ].map(escapeCSVCell);
+    });
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map((e) => e.join(",")),
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
+    link.setAttribute("href", url);
     link.setAttribute(
       "download",
       `quickdeliver_orders_${new Date().toISOString().split("T")[0]}.csv`,
@@ -373,6 +440,7 @@ export default function AdminPanel({
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
     addToast("Successfully downloaded CSV of filtered orders!", "success");
   };
 
@@ -390,18 +458,35 @@ export default function AdminPanel({
     }
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const correctPassword = localStorage.getItem("qd_admin_password") || "ad_123";
-    if (password === correctPassword) {
-      setIsAuthenticated(true);
-      sessionStorage.setItem("qd_admin_auth", "true");
-      addToast("Authenticated successfully as Admin!", "success");
-      // Load data after successful login
-      loadData();
-    } else {
-      setLoginError("Invalid Administrator Password. Access Denied.");
-      addToast("Access Denied: Incorrect password.", "error");
+    try {
+      const response = await fetch("/api/settings/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setIsAuthenticated(true);
+        sessionStorage.setItem("qd_admin_auth", "true");
+        addToast("Authenticated successfully as Admin!", "success");
+        loadData();
+      } else {
+        throw new Error();
+      }
+    } catch (err) {
+      // Local fallback in case the server can't be reached or settings are offline
+      const correctPassword = localStorage.getItem("qd_admin_password") || "ad_123";
+      if (password === correctPassword) {
+        setIsAuthenticated(true);
+        sessionStorage.setItem("qd_admin_auth", "true");
+        addToast("Authenticated successfully as Admin! (Offline Mode)", "success");
+        loadData();
+      } else {
+        setLoginError("Invalid Administrator Password. Access Denied.");
+        addToast("Access Denied: Incorrect password.", "error");
+      }
     }
   };
 
@@ -664,17 +749,26 @@ export default function AdminPanel({
                   type="text"
                   value={upiId}
                   onChange={(e) => setUpiId(e.target.value)}
-                  placeholder="e.g. rashidkharoon@okhdfcbank"
+                  placeholder="e.g. merchant@upi"
                   className="flex-1 bg-stone-950 border border-stone-800 rounded-xl px-3 py-2.5 text-xs text-stone-200 focus:outline-none focus:border-orange-500 font-mono transition-colors"
                 />
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     localStorage.setItem("qd_admin_upi_id", upiId.trim());
-                    addToast(
-                      `UPI ID updated to "${upiId.trim()}"! Dynamic QR codes will redirect to this merchant.`,
-                      "success",
-                    );
+                    try {
+                      await fetch("/api/settings", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ upiId: upiId.trim() }),
+                      });
+                      addToast(
+                        `UPI ID updated to "${upiId.trim()}" in Cloud! Dynamic QR codes will redirect to this merchant.`,
+                        "success",
+                      );
+                    } catch (err) {
+                      addToast("Failed to save UPI ID to cloud", "error");
+                    }
                   }}
                   className="py-2.5 px-4 bg-stone-850 hover:bg-stone-800 text-stone-300 text-xs font-semibold rounded-xl transition-all"
                 >
@@ -701,11 +795,20 @@ export default function AdminPanel({
                 />
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     if (newAdminPassword.trim()) {
                       localStorage.setItem("qd_admin_password", newAdminPassword.trim());
-                      addToast("Master password updated successfully! Only you can access the admin panel now.", "success");
-                      setNewAdminPassword("");
+                      try {
+                        await fetch("/api/settings", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ adminPassword: newAdminPassword.trim() }),
+                        });
+                        addToast("Master password updated in cloud! Only you can access the admin panel now.", "success");
+                        setNewAdminPassword("");
+                      } catch (err) {
+                        addToast("Failed to save password to cloud", "error");
+                      }
                     } else {
                       addToast("Please enter a valid password.", "warning");
                     }
@@ -959,16 +1062,40 @@ export default function AdminPanel({
                       <p className="text-stone-300 leading-relaxed font-medium text-[11px]">
                         {order.details}
                       </p>
-                      {order.fileUrl && (
-                        <a
-                          href={order.fileUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="mt-2 inline-flex items-center gap-1 py-1 px-2 rounded bg-orange-500/5 hover:bg-orange-500/10 text-[10px] font-mono text-orange-500 border border-orange-500/10 transition-colors"
-                        >
-                          <span>Click to View File (GDrive)</span>
-                          <ArrowUpRight size={11} />
-                        </a>
+                      {(order.fileName || order.fileUrl) && (
+                        <div className="mt-2 flex flex-col gap-1.5">
+                          {order.fileName && (
+                            <div className="inline-flex items-center gap-1 text-[10px] text-stone-400 font-mono">
+                              <span className="font-bold text-stone-500">File:</span>
+                              <span className="truncate max-w-[180px] text-stone-300 bg-stone-950 px-1.5 py-0.5 rounded border border-stone-850">{order.fileName}</span>
+                            </div>
+                          )}
+                          {order.fileUrl && (
+                            <div className="flex flex-wrap gap-1.5 mt-0.5">
+                              <a
+                                href={order.fileUrl.startsWith('http') ? order.fileUrl : `${window.location.origin}${order.fileUrl}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 py-1 px-2.5 rounded-lg bg-orange-500/15 hover:bg-orange-500/25 text-[10px] font-bold text-orange-500 border border-orange-500/20 hover:border-orange-500/30 transition-all shadow-sm"
+                              >
+                                <span>Open File</span>
+                                <ArrowUpRight size={11} />
+                              </a>
+                              <button
+                                onClick={() => {
+                                  const absUrl = order.fileUrl!.startsWith('http') ? order.fileUrl! : `${window.location.origin}${order.fileUrl}`;
+                                  navigator.clipboard.writeText(absUrl);
+                                  addToast("Link copied to clipboard!", "success");
+                                }}
+                                className="inline-flex items-center gap-1 py-1 px-2.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-[10px] font-bold text-stone-300 border border-stone-700 transition-all shadow-sm cursor-pointer"
+                                title="Copy direct link to clipboard"
+                              >
+                                <Copy size={11} />
+                                <span>Copy Link</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </td>
 

@@ -54,7 +54,7 @@ export default function StationeryForm({
       addToast(`Incremented quantity for "${libraryItem.name}"`, 'success');
     } else {
       setItems([...items, {
-        id: `lib_${Date.now()}`,
+        id: `lib_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
         name: libraryItem.name,
         quantity: 1,
         estimatedPrice: libraryItem.price
@@ -80,7 +80,7 @@ export default function StationeryForm({
     }
 
     setItems([...items, {
-      id: `custom_${Date.now()}`,
+      id: `custom_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
       name: customItemName.trim(),
       quantity: 1,
       estimatedPrice: customItemPrice

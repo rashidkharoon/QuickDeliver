@@ -53,10 +53,30 @@ export default function App() {
   useEffect(() => {
     setUserDetails(getSavedUserDetails());
     setHasAppsScriptUrl(!!getAppsScriptUrl());
+
+    // Fetch cloud settings on load to keep client synchronized
+    const fetchCloudSettings = async () => {
+      try {
+        const res = await fetch('/api/settings');
+        const data = await res.json();
+        if (data.success) {
+          if (data.appsScriptUrl) {
+            localStorage.setItem('qd_apps_script_url', data.appsScriptUrl);
+            setHasAppsScriptUrl(true);
+          }
+          if (data.upiId) {
+            localStorage.setItem('qd_admin_upi_id', data.upiId);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to sync settings with cloud server:", err);
+      }
+    };
+    fetchCloudSettings();
   }, []);
 
   const addToast = (text: string, type: ToastType = 'info') => {
-    const id = Date.now().toString();
+    const id = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     setToasts((prev) => [...prev, { id, text, type }]);
     
     // Auto remove after 5 seconds
@@ -75,13 +95,14 @@ export default function App() {
 
   const getActiveUpiId = (): string => {
     const saved = localStorage.getItem('qd_admin_upi_id');
-    return (!saved || saved === 'quickdeliver@ybl') ? 'rashidkharoon@okhdfcbank' : saved;
+    return (!saved || saved === 'quickdeliver@ybl') ? 'merchant@upi' : saved;
   };
 
   // Helper to construct a descriptive order summary string
-  const compileOrderDetailsString = (service: ServiceType, details: any): string => {
+  const compileOrderDetailsString = (service: ServiceType, details: any, fileUrl?: string): string => {
     if (service === 'Printing') {
-      return `${details.printType}, ${details.paperSize}, ${details.sides}, ${details.copies} copy(ies). File: ${details.fileName || 'None'}. Instructions: ${details.instructions || 'None'}`;
+      const urlText = fileUrl ? `. Download Link: ${fileUrl}` : '';
+      return `${details.printType}, ${details.paperSize}, ${details.sides}, ${details.copies} copy(ies). File: ${details.fileName || 'None'}${urlText}. Instructions: ${details.instructions || 'None'}`;
     } else if (service === 'Stationery') {
       const itemsList = details.items.map((i: any) => `${i.name} (Qty ${i.quantity})`).join(', ');
       return `Items: ${itemsList}. Notes: ${details.notes || 'None'}`;
@@ -114,9 +135,42 @@ export default function App() {
     }
     localStorage.setItem('qd_last_submission_time', now.toString());
 
+    let finalFileUrl = '';
+
     try {
       const orderId = getNextOrderId();
       const appsScriptUrl = getAppsScriptUrl();
+
+      // 1. Upload file to backend server first if it exists
+      if (activeService === 'Printing' && serviceDetails.fileData) {
+        try {
+          addToast('Uploading document permanently...', 'info');
+          const uploadRes = await fetch('/api/upload', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              fileData: serviceDetails.fileData,
+              fileName: serviceDetails.fileName,
+              fileType: serviceDetails.fileType
+            })
+          });
+          const uploadData = await uploadRes.json();
+          if (uploadData.success) {
+            let serverUrl = uploadData.fileUrl;
+            if (serverUrl && !serverUrl.startsWith('http')) {
+              serverUrl = `${window.location.origin}${serverUrl}`;
+            }
+            finalFileUrl = serverUrl;
+            addToast('Document uploaded successfully!', 'success');
+          } else {
+            console.error('Server upload failed:', uploadData.error);
+          }
+        } catch (uploadErr: any) {
+          console.error('Error calling upload API:', uploadErr);
+        }
+      }
 
       // Create structured order object
       const newOrder: Order = {
@@ -127,16 +181,15 @@ export default function App() {
         department: userDetails.department.trim(),
         deliveryLocation: userDetails.deliveryLocation.trim(),
         serviceType: activeService,
-        details: compileOrderDetailsString(activeService, serviceDetails),
+        details: compileOrderDetailsString(activeService, serviceDetails, finalFileUrl || undefined),
         status: 'Pending',
         estimatedPrice,
         paymentMethod,
         paymentStatus,
         paymentReference,
-        fileName: activeService === 'Printing' ? serviceDetails.fileName : undefined
+        fileName: activeService === 'Printing' ? serviceDetails.fileName : undefined,
+        fileUrl: finalFileUrl || undefined
       };
-
-      let finalFileUrl = '';
 
       if (appsScriptUrl) {
         addToast('Submitting order to Google Sheets...', 'info');
@@ -156,38 +209,43 @@ export default function App() {
           paymentMethod: newOrder.paymentMethod,
           paymentStatus: newOrder.paymentStatus,
           paymentReference: newOrder.paymentReference,
+          fileName: newOrder.fileName,
+          fileUrl: finalFileUrl,
         };
 
-        if (activeService === 'Printing' && serviceDetails.fileData) {
+        // Only send the heavy base64 file data to Google Drive / Sheets if we don't already have a valid cloud storage URL.
+        // This keeps the spreadsheet sync request tiny, extremely fast, and 100% reliable!
+        if (activeService === 'Printing' && serviceDetails.fileData && !finalFileUrl) {
           payload.fileData = serviceDetails.fileData;
           payload.fileName = serviceDetails.fileName;
           payload.fileType = serviceDetails.fileType;
         }
 
-        // Post order directly to Google Apps Script Web App
-        // We use text/plain to avoid OPTIONS preflight triggers in Sheets CORS configurations
-        const response = await fetch(appsScriptUrl, {
+        // Post order to Google Apps Script Web App via our secure server proxy
+        // This bypasses browser-side CORS blocks, Failed to fetch, and network filters!
+        const response = await fetch('/api/proxy-apps-script', {
           method: 'POST',
-          mode: 'cors',
           headers: {
-            'Content-Type': 'text/plain',
+            'Content-Type': 'application/json',
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify({
+            appsScriptUrl,
+            payload,
+          })
         });
 
         const data = await response.json();
         
         if (data.success) {
-          finalFileUrl = data.fileUrl || '';
+          // If Apps Script returns a specific GDrive URL, we can use that as the primary fileUrl
+          if (data.fileUrl) {
+            finalFileUrl = data.fileUrl;
+            newOrder.fileUrl = finalFileUrl;
+          }
           addToast('Saved in Google Sheets!', 'success');
         } else {
           throw new Error(data.error || 'Server rejected submission');
         }
-      }
-
-      // Append final GDrive URL if returned
-      if (finalFileUrl) {
-        newOrder.fileUrl = finalFileUrl;
       }
 
       // Save to customer's personal history
@@ -218,13 +276,14 @@ export default function App() {
         department: userDetails.department.trim(),
         deliveryLocation: userDetails.deliveryLocation.trim(),
         serviceType: activeService,
-        details: compileOrderDetailsString(activeService, serviceDetails),
+        details: compileOrderDetailsString(activeService, serviceDetails, finalFileUrl || undefined),
         status: 'Pending',
         estimatedPrice,
         paymentMethod,
         paymentStatus,
         paymentReference,
-        fileName: activeService === 'Printing' ? serviceDetails.fileName : undefined
+        fileName: activeService === 'Printing' ? serviceDetails.fileName : undefined,
+        fileUrl: finalFileUrl || undefined
       };
       
       saveOrderToHistory(fallbackOrder);

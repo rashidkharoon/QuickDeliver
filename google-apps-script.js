@@ -109,15 +109,18 @@ function doPost(e) {
     const status = postData.status || "Pending";
     const estimatedPrice = parseFloat(postData.estimatedPrice || 0);
     
-    let fileUrl = "";
+    let fileUrl = postData.fileUrl || "";
     
-    // If a file is uploaded as base64, save it to Google Drive
+    // If a file is uploaded as base64 and we don't already have a valid pre-uploaded URL, save it to Google Drive
     if (postData.fileData && postData.fileName) {
-      fileUrl = saveFileToDrive(postData.fileData, postData.fileName, postData.fileType, orderId);
+      const gDriveUrl = saveFileToDrive(postData.fileData, postData.fileName, postData.fileType, orderId);
+      if (gDriveUrl && !gDriveUrl.startsWith("Error")) {
+        fileUrl = gDriveUrl;
+      }
     }
     
     // Append the row to Google Sheets:
-    // Columns: Order ID, Timestamp, Customer Name, Phone, Department, Delivery Location, Service Type, Details, Status, Estimated Price, File URL, Payment Method, Payment Status, Payment Reference
+    // Columns: Order ID, Timestamp, Customer Name, Phone, Department, Delivery Location, Service Type, Details, Status, Estimated Price, File URL, Payment Method, Payment Status, Payment Reference, File Name
     sheet.appendRow([
       orderId,
       timestamp,
@@ -132,7 +135,8 @@ function doPost(e) {
       fileUrl,
       postData.paymentMethod || "Cash on Delivery",
       postData.paymentStatus || "Pending",
-      postData.paymentReference || ""
+      postData.paymentReference || "",
+      postData.fileName || ""
     ]);
     
     return output.setContent(JSON.stringify({ 
@@ -168,7 +172,8 @@ function getOrCreateSheet() {
     "File URL",
     "Payment Method",
     "Payment Status",
-    "Payment Reference"
+    "Payment Reference",
+    "File Name"
   ];
 
   if (!sheet) {
@@ -260,6 +265,7 @@ function getOrdersList(sheet) {
     order.paymentMethod = row[11] || "Cash on Delivery";
     order.paymentStatus = row[12] || "Pending";
     order.paymentReference = row[13] || "";
+    order.fileName = row[14] || "";
     
     orders.push(order);
   }
